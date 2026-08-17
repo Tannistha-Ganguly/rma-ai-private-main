@@ -1,0 +1,380 @@
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import { fetchCustomerCareStats, fetchRecentCustomerCareTickets, fetchRuleValidationStats, deleteTicket, type CustomerCareStats, type RecentTicket, type RuleValidationStat, type TimeRange } from './actions';
+
+export default function CustomerCarePanel() {
+  const [timeRange, setTimeRange] = useState<TimeRange>('all');
+  const [stats, setStats] = useState<CustomerCareStats | null>(null);
+  const [recent, setRecent] = useState<RecentTicket[]>([]);
+  const [ruleStats, setRuleStats] = useState<RuleValidationStat[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+
+  const [fetchingMore, setFetchingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const observerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    async function load() {
+      setLoading(true);
+      try {
+        const [s, r, rs] = await Promise.all([
+          fetchCustomerCareStats(timeRange),
+          fetchRecentCustomerCareTickets(20, 0, timeRange),
+          fetchRuleValidationStats(timeRange)
+        ]);
+        setStats(s);
+        setRecent(r);
+        setRuleStats(rs);
+        if (r.length < 20) {
+          setHasMore(false);
+        } else {
+          setHasMore(true);
+        }
+      } catch (err) {
+        console.error('Failed to load customer care stats', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [timeRange]);
+
+  const loadMore = async () => {
+    if (fetchingMore || !hasMore) return;
+    setFetchingMore(true);
+    try {
+      const nextBatch = await fetchRecentCustomerCareTickets(20, recent.length);
+      if (nextBatch.length < 20) {
+        setHasMore(false);
+      }
+      setRecent(prev => {
+        const existingIds = new Set(prev.map(t => t.id));
+        const filtered = nextBatch.filter(t => !existingIds.has(t.id));
+        return [...prev, ...filtered];
+      });
+    } catch (err) {
+      console.error("Failed to load more tickets", err);
+    } finally {
+      setFetchingMore(false);
+    }
+  };
+
+  const handleDelete = async (e: React.MouseEvent, id: number) => {
+    e.stopPropagation();
+    if (!confirm('Are you sure you want to delete this ticket? This cannot be undone.')) return;
+    
+    setDeletingId(id);
+    const success = await deleteTicket(id);
+    setDeletingId(null);
+    if (success) {
+      setRecent(prev => prev.filter(t => t.id !== id));
+      if (expandedId === id) setExpandedId(null);
+      
+      // Re-fetch stats so the numbers above update immediately
+      try {
+        const [newStats, newRuleStats] = await Promise.all([
+          fetchCustomerCareStats(timeRange),
+          fetchRuleValidationStats(timeRange)
+        ]);
+        setStats(newStats);
+        setRuleStats(newRuleStats);
+      } catch (err) {
+        console.error('Failed to refresh stats after deletion', err);
+      }
+    } else {
+      alert('Failed to delete ticket.');
+    }
+  };
+
+  useEffect(() => {
+    if (loading || !hasMore || fetchingMore) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting) {
+        loadMore();
+      }
+    }, { threshold: 0.1 });
+
+    const currentTarget = observerRef.current;
+    if (currentTarget) {
+      observer.observe(currentTarget);
+    }
+
+    return () => {
+      if (currentTarget) {
+        observer.unobserve(currentTarget);
+      }
+    };
+  }, [loading, hasMore, recent.length, fetchingMore]);
+
+  if (!stats && loading) {
+    return <div className="muted">Loading customer care stats...</div>;
+  }
+
+  if (!stats) return null;
+
+  const total = stats.total_tickets;
+  const resolutionRate = total > 0 ? (((stats.true_positives + stats.false_positives) / total) * 100).toFixed(1) : 0;
+  const tpRate = stats.true_positives + stats.false_positives > 0 ? ((stats.true_positives / (stats.true_positives + stats.false_positives)) * 100).toFixed(1) : 0;
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <h2>Customer Care Review</h2>
+        <select 
+          className="input" 
+          value={timeRange} 
+          onChange={(e) => setTimeRange(e.target.value as TimeRange)}
+          style={{ width: 180, padding: '4px 8px' }}
+        >
+          <option value="all">All Time</option>
+          <option value="24h">Last 24 Hours</option>
+          <option value="48h">Last 48 Hours</option>
+          <option value="72h">Last 72 Hours</option>
+        </select>
+      </div>
+
+      <div className="row" style={{ marginBottom: 16, opacity: loading ? 0.5 : 1 }}>
+        <div className="card col">
+          <div className="kpi-label">Total AI Tickets</div>
+          <div className="kpi">{stats.total_tickets}</div>
+          <div className="muted">Generated by Shadow Runner</div>
+        </div>
+        <div className="card col">
+          <div className="kpi-label">Open / Pending</div>
+          <div className="kpi" style={{ color: 'var(--warn)' }}>{stats.open_tickets}</div>
+          <div className="muted">Status 1</div>
+        </div>
+        <div className="card col">
+          <div className="kpi-label">True Positives</div>
+          <div className="kpi" style={{ color: 'var(--success)' }}>{stats.true_positives}</div>
+          <div className="muted">Action taken (Status 3)</div>
+        </div>
+        <div className="card col">
+          <div className="kpi-label">False Positives</div>
+          <div className="kpi" style={{ color: 'var(--danger)' }}>{stats.false_positives}</div>
+          <div className="muted">Incorrectly Reported</div>
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h2>Rule Validation</h2>
+        <p className="muted" style={{ marginBottom: 16 }}>
+          Accuracy rate: {tpRate}% (based on resolved tickets). Identify noisy rules below:
+        </p>
+        {ruleStats.length === 0 ? (
+          <div className="muted">No rule validation data available yet.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Rule</th>
+                <th style={{ width: 80, textAlign: 'center' }}>True Positives</th>
+                <th style={{ width: 80, textAlign: 'center' }}>False Positives</th>
+                <th style={{ width: 80, textAlign: 'center' }}>Open</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ruleStats.map(r => (
+                <tr key={r.rule_id}>
+                  <td>{r.rule_name} <span className="muted" style={{ fontSize: 11 }}>(ID: {r.rule_id})</span></td>
+                  <td style={{ textAlign: 'center', color: r.true_positives > 0 ? 'var(--success)' : '' }}>{r.true_positives}</td>
+                  <td style={{ textAlign: 'center', color: r.false_positives > 0 ? 'var(--danger)' : '' }}>{r.false_positives}</td>
+                  <td style={{ textAlign: 'center' }}>{r.open_tickets}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Recent Customer Care Tickets</h2>
+        {recent.length === 0 ? (
+          <div className="muted">No recent tickets generated.</div>
+        ) : (
+          <>
+            <table>
+              <thead>
+                <tr>
+                  <th>Ad & Booking Details</th>
+                  <th>Ad Matter</th>
+                  <th>Rules Fired</th>
+                  <th style={{ width: 100 }}>Status</th>
+                  <th>Fixed By</th>
+                  <th>Resolution</th>
+                  <th>Reporting Time</th>
+                  <th style={{ width: 40 }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map(t => {
+                  const isExpanded = expandedId === t.id;
+                  
+                  return (
+                    <React.Fragment key={t.id}>
+                      <tr 
+                        style={{ cursor: 'pointer', background: isExpanded ? 'rgba(0,0,0,0.02)' : '' }}
+                        onClick={() => setExpandedId(isExpanded ? null : t.id)}
+                      >
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{t.ad_id}</div>
+                          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>{t.newspaper_name || 'Unknown Newspaper'}</div>
+                          <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>{t.category_name}</div>
+                          <div style={{ fontSize: 12, marginTop: 4, color: 'var(--primary)', fontWeight: 500 }}>{t.ad_status || 'Unknown Status'}</div>
+                        </td>
+                        <td style={{ maxWidth: 200 }}>
+                          <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, maxHeight: 60, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {t.ad_text || '-'}
+                          </div>
+                        </td>
+                        <td style={{ maxWidth: 250, whiteSpace: 'pre-wrap', fontSize: 13 }}>
+                          <span style={{ color: 'var(--danger)', fontWeight: 500 }}>{t.rules_fired_names}</span>
+                        </td>
+                        <td>
+                          {t.status === '1' && <span style={{ color: 'var(--warn)', fontWeight: 500 }}>Open</span>}
+                          {t.status === '2' && <span style={{ color: 'var(--primary)', fontWeight: 500 }}>Pending</span>}
+                          {t.status === '3' && <span style={{ color: 'var(--success)', fontWeight: 500 }}>Resolved</span>}
+                          {t.status === '4' && <span style={{ color: 'var(--warn)', fontWeight: 500 }}>Waiting on Customer</span>}
+                          {t.status === '5' && <span style={{ color: 'var(--warn)', fontWeight: 500 }}>Waiting from RO</span>}
+                          {t.status === '19' && <span style={{ color: 'var(--danger)', fontWeight: 500 }}>Unresolved</span>}
+                          {t.status === '21' && <span style={{ color: 'var(--info)', fontWeight: 500 }}>Task from RO</span>}
+                          {!['1','2','3','4','5','19','21'].includes(t.status) && <span>{t.status}</span>}
+                        </td>
+                        <td style={{ fontSize: 13 }}>{t.status === '1' ? '-' : (t.admin_name || '-')}</td>
+                        <td className="muted" style={{ maxWidth: 200, fontSize: 13, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.feedback_comment || '-'}</td>
+                        <td className="muted" style={{ fontSize: 13 }}>{t.reporting_time ? new Date(t.reporting_time).toLocaleString() : ''}</td>
+                        <td>
+                          <button 
+                            className="btn btn-sm btn-icon" 
+                            title="Delete Ticket"
+                            onClick={(e) => handleDelete(e, t.id)}
+                            disabled={deletingId === t.id}
+                            style={{ padding: '4px', opacity: deletingId === t.id ? 0.5 : 1, color: 'var(--danger)', background: 'transparent', border: 'none', cursor: 'pointer' }}
+                          >
+                            {deletingId === t.id ? '...' : (
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="3 6 5 6 21 6"></polyline>
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                                <line x1="10" y1="11" x2="10" y2="17"></line>
+                                <line x1="14" y1="11" x2="14" y2="17"></line>
+                              </svg>
+                            )}
+                          </button>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={8} style={{ padding: '16px 24px', borderTop: 'none', borderBottom: '2px solid #eee', background: 'rgba(0,0,0,0.02)' }}>
+                            <div style={{ display: 'flex', gap: 24 }}>
+                              <div style={{ flex: 1 }}>
+                                <strong style={{ display: 'block', marginBottom: 8, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--muted)' }}>Full Ad Matter</strong>
+                                <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', background: 'var(--bg)', padding: 16, borderRadius: 6, border: '1px solid var(--border)' }}>
+                                  {t.ad_text || '-'}
+                                </div>
+                              </div>
+                              <div style={{ flex: 1 }}>
+                                <strong style={{ display: 'block', marginBottom: 8, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--muted)' }}>Customer Care Resolution</strong>
+                                <div style={{ fontSize: 13, background: 'var(--bg)', padding: 16, borderRadius: 6, border: '1px solid var(--border)' }}>
+                                  <div style={{ marginBottom: 8 }}><strong>Fixed By:</strong> {t.status === '1' ? '-' : t.admin_name}</div>
+                                  <div style={{ marginBottom: 8 }}>
+                                    <strong>Rules Fired:</strong> 
+                                    <div style={{ color: 'var(--danger)', fontWeight: 500, whiteSpace: 'pre-wrap', marginTop: 4 }}>
+                                      {t.rules_fired_names}
+                                    </div>
+                                  </div>
+                                  {t.feedback_comment && t.feedback_comment !== '-' && (
+                                    <div style={{ marginBottom: 8 }}><strong>Resolution:</strong> {t.feedback_comment}</div>
+                                  )}
+                                  {t.cc_reply && (
+                                    <div style={{ marginTop: 16 }}>
+                                      <strong style={{ display: 'block', marginBottom: 8 }}>Latest Reply to Customer:</strong>
+                                      <div dangerouslySetInnerHTML={{ __html: t.cc_reply }} style={{ background: '#fff', border: '1px solid var(--border)', padding: '12px 16px', borderRadius: 6, maxHeight: 300, overflowY: 'auto' }} />
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div ref={observerRef} style={{ padding: '16px 0', borderTop: '1px solid var(--border)' }}>
+              {fetchingMore && (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 8 }}>
+                  <div className="spinner" style={{
+                    width: 20,
+                    height: 20,
+                    border: '2px solid var(--border)',
+                    borderTop: '2px solid var(--primary)',
+                    borderRadius: '50%',
+                    animation: 'spin 1s linear infinite'
+                  }} />
+                  <span className="muted" style={{ fontSize: 13 }}>Loading more tickets...</span>
+                </div>
+              )}
+              {!hasMore && recent.length > 0 && (
+                <div className="muted" style={{ textAlign: 'center', fontSize: 13, color: 'var(--muted)' }}>
+                  All customer care tickets loaded.
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="card" style={{ marginTop: 16 }}>
+        <h2>Rule Accuracy (Based on Customer Care Actions)</h2>
+        <p className="muted" style={{ marginTop: 0 }}>
+          Rules sorted by number of False Positives. A ticket is a True Positive if it is resolved (Status 3) and not 'incorrectly reported'. A ticket is a False Positive only if it is resolved as 'incorrectly reported'.
+        </p>
+        {ruleStats.length === 0 ? (
+          <div className="muted">No rule validation stats available yet.</div>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: 60 }}>Rule ID</th>
+                <th>Rule Name</th>
+                <th style={{ textAlign: 'right' }}>Open Tickets</th>
+                <th style={{ textAlign: 'right' }}>True Positives</th>
+                <th style={{ textAlign: 'right' }}>False Positives</th>
+                <th style={{ textAlign: 'right', width: 120 }}>Accuracy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ruleStats.map(rs => {
+                const totalResolved = rs.true_positives + rs.false_positives;
+                const accuracy = totalResolved > 0 ? ((rs.true_positives / totalResolved) * 100).toFixed(1) : '-';
+                return (
+                  <tr key={rs.rule_id}>
+                    <td>#{rs.rule_id}</td>
+                    <td style={{ fontWeight: 500 }}>{rs.rule_name}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--warn)' }}>{rs.open_tickets > 0 ? rs.open_tickets : '-'}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--success)' }}>{rs.true_positives > 0 ? rs.true_positives : '-'}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--danger)' }}>{rs.false_positives > 0 ? rs.false_positives : '-'}</td>
+                    <td style={{ textAlign: 'right' }}>
+                      {accuracy !== '-' ? (
+                        <span className={`badge ${Number(accuracy) > 80 ? 'badge-success' : Number(accuracy) < 50 ? 'badge-danger' : 'badge-warn'}`}>
+                          {accuracy}%
+                        </span>
+                      ) : (
+                        <span className="muted">-</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </>
+  );
+}

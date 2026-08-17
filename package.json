@@ -1,0 +1,35 @@
+{
+  "name": "rma-ai",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3010",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "backtest": "tsx scripts/backtest.ts",
+    "engine:check": "tsx scripts/engine_check.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "csv-parse": "^6.2.1",
+    "mysql2": "^3.11.0",
+    "next": "15.5.18",
+    "openai": "^6.39.0",
+    "p-limit": "^7.3.0",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "dotenv": "^16",
+    "tsx": "^4.19",
+    "typescript": "^5.6"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

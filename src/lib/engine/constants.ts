@@ -1,0 +1,1 @@
+export const EDITORIAL_REASONS_LIST = [1, 2, 4, 10, 11, 12, 13, 18, 109, 137, 148, 150, 207];

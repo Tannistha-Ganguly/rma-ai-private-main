@@ -1,0 +1,5 @@
+# Python deps for scripts/ (one-off CLIs — separate from the Next.js app).
+# Install:  pip install -r scripts/requirements.txt
+pymysql>=1.1
+anthropic>=0.40
+python-dotenv>=1.0
